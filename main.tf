@@ -9,13 +9,13 @@ data "aws_availability_zones" "this" {
 # Create VPC
 ###############################
 resource "aws_vpc" "this" {
-  cidr_block       = var.vpc_cidr
+  cidr_block       = vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true
 
   tags = merge(
-    var.default_tags,
-    { "Name" = var.vpc_name }
+    default_tags,
+    { "Name" = vpc_name }
   )
 }
 
@@ -23,13 +23,13 @@ resource "aws_vpc" "this" {
 # Optionally create an IGW (only if public subnets enabled)
 ###############################
 resource "aws_internet_gateway" "this" {
-  count = var.enable_public_subnets ? 1 : 0
+  count = enable_public_subnets ? 1 : 0
 
   vpc_id = aws_vpc.this.id
 
   tags = merge(
-    var.default_tags,
-    { "Name" = "${var.vpc_name}-igw" }
+    default_tags,
+    { "Name" = "${vpc_name}-igw" }
   )
 }
 
@@ -37,18 +37,18 @@ resource "aws_internet_gateway" "this" {
 # Create Public Subnets (2) if enabled
 ###############################
 resource "aws_subnet" "public" {
-  count = var.enable_public_subnets ? 2 : 0
+  count = enable_public_subnets ? 2 : 0
 
   vpc_id            = aws_vpc.this.id
-  cidr_block        = var.public_subnet_cidrs[count.index]
+  cidr_block        = public_subnet_cidrs[count.index]
   availability_zone = element(data.aws_availability_zones.this.names, count.index)
 
   # So instances in public subnets automatically get public IPs
   map_public_ip_on_launch = true
 
   tags = merge(
-    var.default_tags,
-    { "Name" = "${var.vpc_name}-public-subnet-${count.index}" }
+    default_tags,
+    { "Name" = "${vpc_name}-public-subnet-${count.index}" }
   )
 }
 
@@ -59,14 +59,14 @@ resource "aws_subnet" "private" {
   count = 2
 
   vpc_id            = aws_vpc.this.id
-  cidr_block        = var.private_subnet_cidrs[count.index]
+  cidr_block        = private_subnet_cidrs[count.index]
   availability_zone = element(data.aws_availability_zones.this.names, count.index)
 
   map_public_ip_on_launch = false
 
   tags = merge(
-    var.default_tags,
-    { "Name" = "${var.vpc_name}-private-subnet-${count.index}" }
+    default_tags,
+    { "Name" = "${vpc_name}-private-subnet-${count.index}" }
   )
 }
 
@@ -74,7 +74,7 @@ resource "aws_subnet" "private" {
 # Create NAT Gateway in first public subnet (only if enabled)
 ###############################
 resource "aws_eip" "nat" {
-  count = var.enable_public_subnets ? 1 : 0
+  count = enable_public_subnets ? 1 : 0
   vpc   = true
 
   depends_on = [
@@ -82,13 +82,13 @@ resource "aws_eip" "nat" {
   ]
 
   tags = merge(
-    var.default_tags,
-    { "Name" = "${var.vpc_name}-nat-eip" }
+    default_tags,
+    { "Name" = "${vpc_name}-nat-eip" }
   )
 }
 
 resource "aws_nat_gateway" "this" {
-  count = var.enable_public_subnets ? 1 : 0
+  count = enable_public_subnets ? 1 : 0
 
   allocation_id = aws_eip.nat[0].id
   subnet_id     = length(aws_subnet.public) > 0 ? aws_subnet.public[0].id : null
@@ -98,8 +98,8 @@ resource "aws_nat_gateway" "this" {
   ]
 
   tags = merge(
-    var.default_tags,
-    { "Name" = "${var.vpc_name}-nat-gw" }
+    default_tags,
+    { "Name" = "${vpc_name}-nat-gw" }
   )
 }
 
@@ -107,7 +107,7 @@ resource "aws_nat_gateway" "this" {
 # Create Public Route Table (1) if public subnets are enabled
 ###############################
 resource "aws_route_table" "public" {
-  count = var.enable_public_subnets ? 1 : 0
+  count = enable_public_subnets ? 1 : 0
 
   vpc_id = aws_vpc.this.id
 
@@ -117,8 +117,8 @@ resource "aws_route_table" "public" {
   }
 
   tags = merge(
-    var.default_tags,
-    { "Name" = "${var.vpc_name}-public-rt" }
+    default_tags,
+    { "Name" = "${vpc_name}-public-rt" }
   )
 }
 
@@ -126,7 +126,7 @@ resource "aws_route_table" "public" {
 # Associate Public Subnets to the Public Route Table
 ###############################
 resource "aws_route_table_association" "public_assoc" {
-  count = var.enable_public_subnets ? length(aws_subnet.public) : 0
+  count = enable_public_subnets ? length(aws_subnet.public) : 0
 
   route_table_id = aws_route_table.public[0].id
   subnet_id      = aws_subnet.public[count.index].id
@@ -137,14 +137,14 @@ resource "aws_route_table_association" "public_assoc" {
 # or a single private route table if you prefer
 ###############################
 resource "aws_route_table" "private" {
-  count = var.enable_public_subnets ? 2 : 1
+  count = enable_public_subnets ? 2 : 1
 
   vpc_id = aws_vpc.this.id
 
   # If public subnets are enabled, route 0.0.0.0/0 -> NAT Gateway
   # Otherwise, do NOT create that route
   dynamic "route" {
-    for_each = var.enable_public_subnets ? [true] : []
+    for_each = enable_public_subnets ? [true] : []
     content {
       cidr_block     = "0.0.0.0/0"
       nat_gateway_id = length(aws_nat_gateway.this) > 0 ? aws_nat_gateway.this[0].id : null
@@ -152,8 +152,8 @@ resource "aws_route_table" "private" {
   }
 
   tags = merge(
-    var.default_tags,
-    { "Name" = "${var.vpc_name}-private-rt-${count.index}" }
+    default_tags,
+    { "Name" = "${vpc_name}-private-rt-${count.index}" }
   )
 }
 
@@ -165,7 +165,7 @@ resource "aws_route_table_association" "private_assoc" {
   # else we have only 1 route table, so all subnets share it
   count = 2
 
-  route_table_id = var.enable_public_subnets ? aws_route_table.private[count.index].id : aws_route_table.private[0].id
+  route_table_id = enable_public_subnets ? aws_route_table.private[count.index].id : aws_route_table.private[0].id
 
   subnet_id = aws_subnet.private[count.index].id
 }
