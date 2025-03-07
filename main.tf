@@ -165,9 +165,7 @@ resource "aws_route_table_association" "private_assoc" {
   # else we have only 1 route table, so all subnets share it
   count = 2
 
-  route_table_id = var.enable_public_subnets
-    ? aws_route_table.private[count.index].id
-    : aws_route_table.private[0].id
+  route_table_id = var.enable_public_subnets ? aws_route_table.private[count.index].id : aws_route_table.private[0].id
 
   subnet_id = aws_subnet.private[count.index].id
 }
