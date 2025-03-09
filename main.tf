@@ -68,7 +68,7 @@ resource "aws_internet_gateway" "igw" {
 
   tags = merge(local.default_tags,
     {
-      "Name" = "${var.prefix}-igw"
+      "Name" = "${var.env}-igw"
     }
   )
 }
