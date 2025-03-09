@@ -1,199 +1,143 @@
-###############################
-# Data source: availability zones
-###############################
-data "aws_availability_zones" "this" {
+# Terraform Config file (main.tf). This has provider block (AWS) and config for provisioning one EC2 instance resource.  
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 3.27"
+    }
+  }
+
+  required_version = ">=0.14"
+}
+provider "aws" {
+  profile = "default"
+  region  = "us-east-1"
+}
+
+# Data source for availability zones in us-east-1
+data "aws_availability_zones" "available" {
   state = "available"
 }
 
-###############################
-# Create VPC
-###############################
-resource "aws_vpc" "this" {
-  cidr_block       = vpc_cidr
-  enable_dns_hostnames = true
-  enable_dns_support   = true
+# Define tags locally
+locals {
+  default_tags = merge(var.default_tags, { "env" = var.env })
+}
+
+# Create a new VPC 
+resource "aws_vpc" "main" {
+  cidr_block       = var.vpc_cidr
+  instance_tenancy = "default"
+  tags = merge(
+    local.default_tags, {
+      Name = var.env
+    }
+  )
+}
+
+# Add provisioning of the public subnetin the default VPC
+resource "aws_subnet" "public_subnet" {
+  count             = length(var.public_cidr_blocks)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.public_cidr_blocks[count.index]
+  availability_zone = element(data.aws_availability_zones.available.names, count.index)
+  tags = merge(
+    local.default_tags, {
+      Name = "${var.env}-public-subnet-${count.index}"
+    }
+  )
+}
+
+resource "aws_subnet" "private_subnet" {
+  count      = length(var.private_cidr_blocks)
+  vpc_id     = aws_vpc.main.id
+  cidr_block = var.private_cidr_blocks[count.index]
+
+  availability_zone = element(data.aws_availability_zones.available.names, count.index)
 
   tags = merge(
-    default_tags,
-    { "Name" = vpc_name }
+    var.default_tags,
+    { Name = "${var.vpc_name}-private-${count.index}" }
+  )
+}
+# Create Internet Gateway
+resource "aws_internet_gateway" "igw" {
+  count  = length(var.public_cidr_blocks) > 0 ? 1 : 0
+  vpc_id = aws_vpc.main.id
+
+  tags = merge(local.default_tags,
+    {
+      "Name" = "${var.prefix}-igw"
+    }
   )
 }
 
 ###############################
-# Optionally create an IGW (only if public subnets enabled)
-###############################
-resource "aws_internet_gateway" "this" {
-  count = enable_public_subnets ? 1 : 0
-
-  vpc_id = aws_vpc.this.id
-
-  tags = merge(
-    default_tags,
-    { "Name" = "${vpc_name}-igw" }
-  )
-}
-
-###############################
-# Create Public Subnets (2) if enabled
-###############################
-resource "aws_subnet" "public" {
-  count = enable_public_subnets ? 2 : 0
-
-  vpc_id            = aws_vpc.this.id
-  cidr_block        = public_subnet_cidrs[count.index]
-  availability_zone = element(data.aws_availability_zones.this.names, count.index)
-
-  # So instances in public subnets automatically get public IPs
-  map_public_ip_on_launch = true
-
-  tags = merge(
-    default_tags,
-    { "Name" = "${vpc_name}-public-subnet-${count.index}" }
-  )
-}
-
-###############################
-# Create Private Subnets (2)
-###############################
-resource "aws_subnet" "private" {
-  count = 2
-
-  vpc_id            = aws_vpc.this.id
-  cidr_block        = private_subnet_cidrs[count.index]
-  availability_zone = element(data.aws_availability_zones.this.names, count.index)
-
-  map_public_ip_on_launch = false
-
-  tags = merge(
-    default_tags,
-    { "Name" = "${vpc_name}-private-subnet-${count.index}" }
-  )
-}
-
-###############################
-# Create NAT Gateway in first public subnet (only if enabled)
+# 5. NAT Gateway in the first public subnet (only if we have public subnets)
 ###############################
 resource "aws_eip" "nat" {
-  count = enable_public_subnets ? 1 : 0
-  vpc   = true
-
-  depends_on = [
-    aws_internet_gateway.this
-  ]
-
-  tags = merge(
-    default_tags,
-    { "Name" = "${vpc_name}-nat-eip" }
-  )
+  count      = length(var.public_cidr_blocks) > 0 ? 1 : 0
+  domain     = "vpc"
+  depends_on = [aws_internet_gateway.igw]
 }
 
-resource "aws_nat_gateway" "this" {
-  count = enable_public_subnets ? 1 : 0
+resource "aws_nat_gateway" "ngw" {
+  count = length(var.public_cidr_blocks) > 0 ? 1 : 0
 
   allocation_id = aws_eip.nat[0].id
-  subnet_id     = length(aws_subnet.public) > 0 ? aws_subnet.public[0].id : null
+  subnet_id     = length(aws_subnet.public_subnet) > 0 ? aws_subnet.public_subnet[0].id : null
 
-  depends_on = [
-    aws_internet_gateway.this
-  ]
+  depends_on = [aws_internet_gateway.igw]
 
   tags = merge(
-    default_tags,
-    { "Name" = "${vpc_name}-nat-gw" }
+    var.default_tags,
+    { Name = "${var.vpc_name}-nat" }
   )
 }
-
-###############################
-# Create Public Route Table (1) if public subnets are enabled
-###############################
-resource "aws_route_table" "public" {
-  count = enable_public_subnets ? 1 : 0
-
-  vpc_id = aws_vpc.this.id
-
+# Route table to route add default gateway pointing to Internet Gateway (IGW)
+resource "aws_route_table" "public_subnets" {
+  vpc_id = aws_vpc.main.id
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = length(aws_internet_gateway.this) > 0 ? aws_internet_gateway.this[0].id : null
+    gateway_id = aws_internet_gateway.igw[0].id
   }
+  tags = {
+    Name = "${var.env}-route-public-subnets"
+  }
+}
 
-  tags = merge(
-    default_tags,
-    { "Name" = "${vpc_name}-public-rt" }
-  )
+# Associate subnets with the custom route table
+resource "aws_route_table_association" "public_route_table_association" {
+  count          = length(aws_subnet.public_subnet[*].id)
+  route_table_id = aws_route_table.public_subnets.id
+  subnet_id      = aws_subnet.public_subnet[count.index].id
 }
 
 ###############################
-# Associate Public Subnets to the Public Route Table
+# 8. Route tables for private subnets
 ###############################
-resource "aws_route_table_association" "public_assoc" {
-  count = enable_public_subnets ? length(aws_subnet.public) : 0
-
-  route_table_id = aws_route_table.public[0].id
-  subnet_id      = aws_subnet.public[count.index].id
-}
-
-###############################
-# Create Private Route Tables (2) if public subnets enabled
-# or a single private route table if you prefer
-###############################
+# We'll create one private route table per private subnet, each routing 0.0.0.0/0 to NAT if public subnets exist
 resource "aws_route_table" "private" {
-  count = enable_public_subnets ? 2 : 1
+  count  = length(var.private_cidr_blocks)
+  vpc_id = aws_vpc.main.id
 
-  vpc_id = aws_vpc.this.id
-
-  # If public subnets are enabled, route 0.0.0.0/0 -> NAT Gateway
-  # Otherwise, do NOT create that route
   dynamic "route" {
-    for_each = enable_public_subnets ? [true] : []
+    for_each = length(var.public_cidr_blocks) > 0 ? [true] : []
     content {
       cidr_block     = "0.0.0.0/0"
-      nat_gateway_id = length(aws_nat_gateway.this) > 0 ? aws_nat_gateway.this[0].id : null
+      nat_gateway_id = length(aws_nat_gateway.ngw) > 0 ? aws_nat_gateway.ngw[0].id : null
     }
   }
 
   tags = merge(
-    default_tags,
-    { "Name" = "${vpc_name}-private-rt-${count.index}" }
+    var.default_tags,
+    { Name = "${var.vpc_name}-private-rt-${count.index}" }
   )
 }
 
-###############################
-# Associate Private Subnets with the Private RT(s)
-###############################
 resource "aws_route_table_association" "private_assoc" {
-  # If we have 2 route tables (i.e. public is enabled), one per subnet
-  # else we have only 1 route table, so all subnets share it
-  count = 2
-
-  route_table_id = enable_public_subnets ? aws_route_table.private[count.index].id : aws_route_table.private[0].id
-
-  subnet_id = aws_subnet.private[count.index].id
-}
-
-###############################
-# Outputs
-###############################
-output "vpc_id" {
-  description = "The ID of the newly created VPC"
-  value       = aws_vpc.this.id
-}
-
-output "public_subnet_ids" {
-  description = "IDs of the public subnets (empty if enable_public_subnets=false)"
-  value       = [for subnet in aws_subnet.public : subnet.id]
-}
-
-output "private_subnet_ids" {
-  description = "IDs of the private subnets"
-  value       = [for subnet in aws_subnet.private : subnet.id]
-}
-
-output "public_route_table_id" {
-  description = "Public route table ID (null if not created)"
-  value       = length(aws_route_table.public) > 0 ? aws_route_table.public[0].id : null
-}
-
-output "private_route_table_ids" {
-  description = "Private route table IDs"
-  value       = [for rt in aws_route_table.private : rt.id]
+  count          = length(aws_subnet.public_subnet[*].id)
+  route_table_id = aws_route_table.private[count.index].id
+  subnet_id      = aws_subnet.private_subnet[count.index].id
 }
