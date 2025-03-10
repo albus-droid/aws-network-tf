@@ -97,6 +97,7 @@ resource "aws_nat_gateway" "ngw" {
 }
 # Route table to route add default gateway pointing to Internet Gateway (IGW)
 resource "aws_route_table" "public_subnets" {
+  count = length(var.public_cidr_blocks) > 0 ? 1 : 0
   vpc_id = aws_vpc.main.id
   route {
     cidr_block = "0.0.0.0/0"
