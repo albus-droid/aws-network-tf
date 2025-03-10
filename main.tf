@@ -110,7 +110,7 @@ resource "aws_route_table" "public_subnets" {
 
 # Associate subnets with the custom route table
 resource "aws_route_table_association" "public_route_table_association" {
-  count          = length(aws_subnet.public_subnet[*].id)
+  count = length(var.public_cidr_blocks) > 0 ? 1 : 0
   route_table_id = aws_route_table.public_subnets.id
   subnet_id      = aws_subnet.public_subnet[count.index].id
 }
