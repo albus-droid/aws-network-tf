@@ -120,7 +120,7 @@ resource "aws_route_table_association" "public_route_table_association" {
 ###############################
 # We'll create one private route table per private subnet, each routing 0.0.0.0/0 to NAT if public subnets exist
 resource "aws_route_table" "private" {
-  count  = length(var.private_cidr_blocks)
+  count  = length(var.private_cidr_blocks) > 0 ? 1 : 0
   vpc_id = aws_vpc.main.id
 
   dynamic "route" {
@@ -138,7 +138,7 @@ resource "aws_route_table" "private" {
 }
 
 resource "aws_route_table_association" "private_assoc" {
-  count          = length(aws_subnet.public_subnet[0].id)
+  count          = length(aws_subnet.public_subnet[*].id)
   route_table_id = aws_route_table.private[count.index].id
   subnet_id      = aws_subnet.private_subnet[count.index].id
 }
